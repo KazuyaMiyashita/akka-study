@@ -39,7 +39,7 @@ object Main extends App {
     }
   }(mainEc)
 
-  io.StdIn.readLine()
+  scala.io.StdIn.readLine()
   active = false
   wrapperActorSystem.terminate()
 

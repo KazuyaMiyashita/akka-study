@@ -33,7 +33,7 @@ object Main extends App {
 
   println("\npress ENTER to terminate.\n")
 
-  io.StdIn.readLine()
+  scala.io.StdIn.readLine()
   system.terminate()
 
 }

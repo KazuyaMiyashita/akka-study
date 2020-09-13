@@ -20,7 +20,7 @@ object Main extends App {
 
   def loop(): Unit = {
     print("> ")
-    val in = io.StdIn.readLine()
+    val in = scala.io.StdIn.readLine()
     if (in == ExitMessage) {
       delayEchoActorSystem ! DelayEcho.Stop
     } else {

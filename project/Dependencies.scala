@@ -12,5 +12,13 @@ object Dependencies {
 
   lazy val logback = "ch.qos.logback" % "logback-classic" % "1.2.3"
 
-  lazy val all = akka :: akkaStream :: akkaStreamTyped :: akkaHttp :: logback :: (scalaTest % Test) :: Nil
+  val CirceVersion = "0.12.3"
+
+  lazy val circe = "io.circe" %% "circe-core" % CirceVersion
+  lazy val circeGeneric = "io.circe" %% "circe-generic" % CirceVersion
+  lazy val circeParser = "io.circe" %% "circe-parser" % CirceVersion
+
+  lazy val all = 
+    akka :: akkaStream :: akkaStreamTyped :: akkaHttp :: logback :: 
+    circe :: circeGeneric :: circeParser :: (scalaTest % Test) :: Nil
 }
