@@ -25,6 +25,12 @@ class ChatRoomsAdapter(actor: ActorRef[ChatRooms.Command]) extends Handler {
         case req @ HttpRequest(DELETE, Uri.Path(path), _, _, _)
             if """/chat/[\da-fA-F]{8}-[\da-fA-F]{4}-[\da-fA-F]{4}-[\da-fA-F]{4}-[\da-fA-F]{12}""".r.matches(path) =>
           deleteRoom
+        case req @ HttpRequest(GET, Uri.Path(path), _, _, _)
+            if """/chat/[\da-fA-F]{8}-[\da-fA-F]{4}-[\da-fA-F]{4}-[\da-fA-F]{4}-[\da-fA-F]{12}""".r.matches(path) =>
+          fetchMessages
+        case req @ HttpRequest(POST, Uri.Path(path), _, _, _)
+            if """/chat/[\da-fA-F]{8}-[\da-fA-F]{4}-[\da-fA-F]{4}-[\da-fA-F]{4}-[\da-fA-F]{12}""".r.matches(path) =>
+          addMessage
         // FIXME: handle other path to 404 error
       }
       Source.single(r).via(flow)
@@ -91,23 +97,83 @@ class ChatRoomsAdapter(actor: ActorRef[ChatRooms.Command]) extends Handler {
     chatRoomId.via(flow)
   }
 
+  private val fetchMessages: Flow[HttpRequest, HttpResponse, NotUsed] = {
+    implicit val timeout: Timeout = 1.seconds
+
+    val chatRoomId: Flow[HttpRequest, ChatRooms.ChatRoomId, NotUsed] = Flow[HttpRequest].map { r =>
+      ChatRooms.ChatRoomId.fromString(r.uri.path.toString.drop("/chat/".length)) // FIXME refactor
+    }
+
+    val flow: Flow[ChatRooms.ChatRoomId, List[ChatRoom.Message], NotUsed] = ActorFlow.ask(parallelism = 8)(ref = actor)(
+      makeMessage = (chatRoomId, ref) => ChatRooms.ChatRoomCommand(chatRoomId, ChatRoom.FetchMessages(ref))
+    )
+
+    val responseMapping: Flow[List[ChatRoom.Message], HttpResponse, NotUsed] =
+      Flow[List[ChatRoom.Message]].map { messages =>
+        val messageResponse =
+          messages.map(m => MessageResponse(m.body))
+        val responseString = encodeFetchMessageResponse(messageResponse)
+        HttpResponse(200, entity = responseString)
+      }
+
+    chatRoomId.via(flow).via(responseMapping)
+  }
+
+  private val addMessage: Flow[HttpRequest, HttpResponse, NotUsed] = {
+    val request: Flow[HttpRequest, Either[HttpResponse, (ChatRooms.ChatRoomId, AddMessageRequest)], NotUsed] =
+      Flow[HttpRequest].flatMapConcat { r =>
+        val chatRoomId = ChatRooms.ChatRoomId.fromString(r.uri.path.toString.drop("/chat/".length)) // FIXME refactor
+        val addMessageRequest: Source[Either[HttpResponse, AddMessageRequest], _] =
+          r.entity.dataBytes.map(_.decodeString(StandardCharsets.UTF_8)).map(decodeAddMessageRequest)
+        addMessageRequest.flatMapConcat {
+          case Right(value) => Source.single(Right((chatRoomId, value)))
+          case Left(value)  => Source.single(Left(value))
+        }
+      }
+
+    val flow: Flow[(ChatRooms.ChatRoomId, AddMessageRequest), HttpResponse, NotUsed] = Flow.fromFunction {
+      case (chatRoomId, request) =>
+        actor ! ChatRooms.ChatRoomCommand(chatRoomId, ChatRoom.AddMessage(ChatRoom.Message(request.body)))
+        HttpResponse(202)
+    }
+
+    request.flatMapConcat {
+      case Right(value) => Source.single(value).via(flow)
+      case Left(value)  => Source.single(value)
+    }
+  }
+
 }
 
 object ChatRoomsAdapter {
 
   case class CreateRoomRequest(name: String)
   case class RoomResponse(chatRoomId: String, name: String)
-  private val createRoomDecoder: Decoder[CreateRoomRequest] = deriveDecoder[CreateRoomRequest]
+  private val createRoomDecoder: Decoder[CreateRoomRequest] = deriveDecoder
   def decodeCreateRoomRequest(in: String): Either[HttpResponse, CreateRoomRequest] = {
     parser.parse(in).flatMap(createRoomDecoder.decodeJson).left.map { _ =>
       HttpResponse(400, entity = "bad request. invalid json.")
     }
   }
-  private val roomEncoder: Encoder[RoomResponse]          = deriveEncoder[RoomResponse]
+  private val roomEncoder: Encoder[RoomResponse]          = deriveEncoder
   def encodeCreateRoomResponse(res: RoomResponse): String = roomEncoder(res).noSpaces
   def encodeListRoomResponse(res: List[RoomResponse]): String = {
     import io.circe.syntax._
     implicit val encoder = roomEncoder
+    res.asJson.noSpaces
+  }
+  case class AddMessageRequest(body: String)
+  private val addMessageDecoder: Decoder[AddMessageRequest] = deriveDecoder
+  def decodeAddMessageRequest(in: String): Either[HttpResponse, AddMessageRequest] = {
+    parser.parse(in).flatMap(addMessageDecoder.decodeJson).left.map { _ =>
+      HttpResponse(400, entity = "bad request. invalid json.")
+    }
+  }
+  case class MessageResponse(body: String)
+  private val messageEncoder: Encoder[MessageResponse] = deriveEncoder
+  def encodeFetchMessageResponse(res: List[MessageResponse]): String = {
+    import io.circe.syntax._
+    implicit val encoder = messageEncoder
     res.asJson.noSpaces
   }
 

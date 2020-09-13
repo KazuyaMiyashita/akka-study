@@ -7,9 +7,10 @@ import akka.actor.typed.scaladsl.Behaviors
 object ChatRooms {
 
   sealed trait Command
-  final case class CreateRoom(roomName: String, replyTo: ActorRef[ChatRoomInfo]) extends Command
-  final case class ListRooms(replyTo: ActorRef[List[ChatRoomInfo]])              extends Command
-  final case class DeleteRoom(chatRoomId: ChatRoomId)                            extends Command
+  final case class CreateRoom(roomName: String, replyTo: ActorRef[ChatRoomInfo])      extends Command
+  final case class ListRooms(replyTo: ActorRef[List[ChatRoomInfo]])                   extends Command
+  final case class DeleteRoom(chatRoomId: ChatRoomId)                                 extends Command
+  final case class ChatRoomCommand(chatRoomId: ChatRoomId, command: ChatRoom.Command) extends Command
 
   case class ChatRoomId(value: UUID) {
     def asString: String = value.toString
@@ -40,6 +41,10 @@ object ChatRooms {
       }
       case DeleteRoom(chatRoomId) => {
         chatRooms(rooms - chatRoomId)
+      }
+      case ChatRoomCommand(chatRoomId, command) => {
+        rooms.get(chatRoomId).map(_.ref).foreach(_ ! command) // FIXME chatRoomIdが存在しなかった時の挙動
+        Behaviors.same
       }
     }
   }
