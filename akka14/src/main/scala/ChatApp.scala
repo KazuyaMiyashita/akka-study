@@ -3,10 +3,12 @@ package akka14
 import java.nio.charset.StandardCharsets
 import scala.concurrent.duration._
 import akka.actor.typed.ActorRef
-import akka.stream.scaladsl.{Source, Flow}
+import akka.stream.scaladsl.{Source, Flow, Sink}
 import akka.stream.typed.scaladsl.ActorFlow
 import akka.http.scaladsl.model.{HttpResponse, HttpRequest, Uri}
 import akka.http.scaladsl.model.HttpMethods._
+import akka.http.scaladsl.model.AttributeKeys.webSocketUpgrade
+import akka.http.scaladsl.model.ws.Message
 import akka.util.Timeout
 import akka.NotUsed
 import io.circe.{Decoder, Encoder}
@@ -14,6 +16,7 @@ import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
 import io.circe.parser
 
 import ChatRoomsAdapter._
+import akka.http.scaladsl.model.ws.TextMessage
 
 class ChatRoomsAdapter(actor: ActorRef[ChatRooms.Command]) extends Handler {
 
@@ -31,6 +34,15 @@ class ChatRoomsAdapter(actor: ActorRef[ChatRooms.Command]) extends Handler {
         case req @ HttpRequest(POST, Uri.Path(path), _, _, _)
             if """/chat/[\da-fA-F]{8}-[\da-fA-F]{4}-[\da-fA-F]{4}-[\da-fA-F]{4}-[\da-fA-F]{12}""".r.matches(path) =>
           addMessage
+        case req @ HttpRequest(GET, Uri.Path(path), _, _, _)
+            if """/chat/[\da-fA-F]{8}-[\da-fA-F]{4}-[\da-fA-F]{4}-[\da-fA-F]{4}-[\da-fA-F]{12}/stream""".r.matches(
+              path
+            ) =>
+          req.attribute(webSocketUpgrade) match {
+            case Some(upgrade) => Flow.fromFunction((_: HttpRequest) => upgrade.handleMessages(subscribeMessage))
+            case None =>
+              Flow.fromFunction((_: HttpRequest) => HttpResponse(400, entity = "Not a valid websocket request!"))
+          }
         // FIXME: handle other path to 404 error
       }
       Source.single(r).via(flow)
@@ -141,6 +153,11 @@ class ChatRoomsAdapter(actor: ActorRef[ChatRooms.Command]) extends Handler {
       case Right(value) => Source.single(value).via(flow)
       case Left(value)  => Source.single(value)
     }
+  }
+
+  private val subscribeMessage: Flow[Message, Message, NotUsed] = {
+    val source = Source(1 to 100).map(i => TextMessage(i.toString)).throttle(1, 100.millis) // TODO
+    Flow.fromSinkAndSource(Sink.ignore, source)
   }
 
 }
