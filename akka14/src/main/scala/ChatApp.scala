@@ -4,7 +4,7 @@ import java.nio.charset.StandardCharsets
 import scala.concurrent.duration._
 import akka.actor.typed.ActorRef
 import akka.stream.scaladsl.{Source, Flow, Sink}
-import akka.stream.typed.scaladsl.ActorFlow
+import akka.stream.typed.scaladsl.{ActorFlow, ActorSource}
 import akka.http.scaladsl.model.{HttpResponse, HttpRequest, Uri}
 import akka.http.scaladsl.model.HttpMethods._
 import akka.http.scaladsl.model.AttributeKeys.webSocketUpgrade
@@ -17,6 +17,8 @@ import io.circe.parser
 
 import ChatRoomsAdapter._
 import akka.http.scaladsl.model.ws.TextMessage
+import akka.stream.OverflowStrategy
+import akka14.ChatRooms.ChatRoomCommand
 
 class ChatRoomsAdapter(actor: ActorRef[ChatRooms.Command]) extends Handler {
 
@@ -39,7 +41,8 @@ class ChatRoomsAdapter(actor: ActorRef[ChatRooms.Command]) extends Handler {
               path
             ) =>
           req.attribute(webSocketUpgrade) match {
-            case Some(upgrade) => Flow.fromFunction((_: HttpRequest) => upgrade.handleMessages(subscribeMessage))
+            case Some(upgrade) =>
+              Flow.fromFunction[HttpRequest, HttpResponse](req => upgrade.handleMessages(subscribeMessage(req)))
             case None =>
               Flow.fromFunction((_: HttpRequest) => HttpResponse(400, entity = "Not a valid websocket request!"))
           }
@@ -155,9 +158,25 @@ class ChatRoomsAdapter(actor: ActorRef[ChatRooms.Command]) extends Handler {
     }
   }
 
-  private val subscribeMessage: Flow[Message, Message, NotUsed] = {
-    val source = Source(1 to 100).map(i => TextMessage(i.toString)).throttle(1, 100.millis) // TODO
-    Flow.fromSinkAndSource(Sink.ignore, source)
+  private val subscribeMessage: HttpRequest => Flow[Message, Message, NotUsed] = { request =>
+    val chatRoomId = ChatRooms.ChatRoomId.fromString(request.uri.path.toString.drop("/chat/".length).take(36)) // FIXME refactor
+
+    val source = ActorSource
+      .actorRef[ChatRoom.Message](
+        completionMatcher = PartialFunction.empty,
+        failureMatcher = PartialFunction.empty,
+        bufferSize = 8,
+        overflowStrategy = OverflowStrategy.fail
+      )
+      .mapMaterializedValue { subscribeTo =>
+        actor ! ChatRoomCommand(chatRoomId, ChatRoom.SubscribeMessage(subscribeTo))
+      }
+
+    val responseMapping: Flow[ChatRoom.Message, TextMessage, NotUsed] = Flow.fromFunction { message =>
+      TextMessage(encodeMessageResponse(MessageResponse(message.body)))
+    }
+
+    Flow.fromSinkAndSource(Sink.ignore, source.via(responseMapping))
   }
 
 }
@@ -188,6 +207,11 @@ object ChatRoomsAdapter {
   }
   case class MessageResponse(body: String)
   private val messageEncoder: Encoder[MessageResponse] = deriveEncoder
+  def encodeMessageResponse(res: MessageResponse): String = {
+    import io.circe.syntax._
+    implicit val encoder = messageEncoder
+    res.asJson.noSpaces
+  }
   def encodeFetchMessageResponse(res: List[MessageResponse]): String = {
     import io.circe.syntax._
     implicit val encoder = messageEncoder
