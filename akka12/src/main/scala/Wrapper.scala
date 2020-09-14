@@ -26,15 +26,8 @@ object Wrapper {
         after ! Delay.RequestMessage[String](
           message,
           DelayMillis,
-          context.messageAdapter(WrappedAfterResponse(_, replyTo))
+          replyTo
         )
-        Behaviors.same
-      }
-      case WrappedAfterResponse(response, replyTo) => {
-        response match {
-          case Success(value)     => replyTo ! StatusReply.Success(value)
-          case Failure(exception) => replyTo ! StatusReply.Error(exception)
-        }
         Behaviors.same
       }
     }
