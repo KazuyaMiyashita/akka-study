@@ -19,6 +19,7 @@ import ChatRoomsAdapter._
 import akka.http.scaladsl.model.ws.TextMessage
 import akka.stream.OverflowStrategy
 import akka14.ChatRooms.ChatRoomCommand
+import akka.http.scaladsl.model.ws.BinaryMessage
 
 class ChatRoomsAdapter(actor: ActorRef[ChatRooms.Command]) extends Handler {
 
@@ -176,7 +177,21 @@ class ChatRoomsAdapter(actor: ActorRef[ChatRooms.Command]) extends Handler {
       TextMessage(encodeMessageResponse(MessageResponse(message.body)))
     }
 
-    Flow.fromSinkAndSource(Sink.ignore, source.via(responseMapping))
+    val requestMapping: Flow[Message, ChatRoom.Message, NotUsed] = Flow[Message]
+      .flatMapConcat {
+        case tm: TextMessage   => tm.textStream
+        case bm: BinaryMessage => Source.empty
+      }
+      .map(body => ChatRoom.Message(body))
+
+    val addMessage: Sink[ChatRoom.Message, NotUsed] = Sink
+      .foreach[ChatRoom.Message] { message => actor ! ChatRoomCommand(chatRoomId, ChatRoom.AddMessage(message)) }
+      .mapMaterializedValue(_ => NotUsed)
+
+    Flow.fromSinkAndSource(
+      requestMapping.to(addMessage),
+      source.via(responseMapping)
+    )
   }
 
 }
